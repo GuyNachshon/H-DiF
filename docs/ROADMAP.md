@@ -41,6 +41,7 @@ Work items, in order:
    - Curved (needs ≥10 steps for sharpness) → PMRF alignment step; hallucination across spectra → CaReFlow cyclic constraint (mirror backward velocity).
 3. **Open research question (PLAN §2.5):** one-to-many color mapping (identical thermal signature → many valid colors). Does the flow average to gray? Diagnose from val samples; candidate fixes (in escalation order): stochastic x0 perturbation, CFG-style conditioning dropout, conditional discriminator at outer layers (PLAN Phase-4 fallback).
 4. **x0 formulation decision** (currently: TIR broadcast to 3ch): compare vs. noise-seeded x0 on the same 40k budget. One A/B, pick, move on.
+5. **Optimizer A/B before the 200k run:** AdamW (control, current recipe) vs. **Muon** — well-validated sample-efficiency gains on transformer pretraining; a 40k A/B costs ~$4. **Gefen** (github.com/ndvbd/Gefen, 8-bit quantized AdamW states) is shelved until we're memory-bound: at ~50M params optimizer states are ~0.4GB — nothing to save on a 24GB card — and it's early-stage with custom CUDA kernels, unvalidated on diffusion/flow models. Revisit if we adopt the HDiT-1B init (PLAN §1.2), where ~8GB of AdamW states makes its 8× reduction decisive.
 
 ## Phase 3 — Temporal Stabilization ⬜
 
