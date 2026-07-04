@@ -46,7 +46,8 @@ def upload_checkpoint(repo_id, step):
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi()
+        # huggingface_hub only auto-reads HF_TOKEN, not HUGGINGFACE_TOKEN
+        api = HfApi(token=os.environ["HUGGINGFACE_TOKEN"])
         api.create_repo(repo_id, exist_ok=True, private=True)
         for fname in (f"step_{step}.safetensors", "latest.pt", "latest.safetensors"):
             api.upload_file(
