@@ -36,9 +36,21 @@ if [ -d /workspace/h-dif/data ]; then
     DATA_ROOT_ARGS=(--data_root /root/data)
 fi
 
+# Never two trainers on one GPU: a prior run's failed auto-stop once left its
+# process alive and a second launch silently shared the GPU and clobbered
+# checkpoints/. Refuse to start instead.
+if pgrep -f "python src/train.py" > /dev/null; then
+    echo "ERROR: a train.py process is already running on this pod — refusing to launch."
+    pgrep -af "python src/train.py"
+    exit 1
+fi
+
 export PYTHONUNBUFFERED=1  # never lose a traceback to block buffering through tee
-echo "starting training: config=$1"
-/root/venv/bin/python src/train.py --config "$1" "${DATA_ROOT_ARGS[@]}" 2>&1 | tee /workspace/logs/train.log
+RUN_TAG="$(basename "$1" .yaml)-$(date +%Y%m%d-%H%M%S)"
+LOG="/workspace/logs/train-${RUN_TAG}.log"
+ln -sfn "$LOG" /workspace/logs/train.log   # stable path for tails; real file is per-run
+echo "starting training: config=$1 log=$LOG"
+/root/venv/bin/python src/train.py --config "$1" "${DATA_ROOT_ARGS[@]}" 2>&1 | tee "$LOG"
 EXIT_CODE=${PIPESTATUS[0]}
 TEE_STATUS=${PIPESTATUS[1]}
 if [ "$TEE_STATUS" -ne 0 ]; then
