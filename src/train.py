@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 
+import cv2
 import torch
 import yaml
 from safetensors.torch import load_file, save_file
@@ -12,6 +13,8 @@ from data.paired import PairedThermalRGB
 from flow.rectified import RectifiedFlow
 from models.build import build_hdit
 from sampling.ode import euler, midpoint
+
+_CANNY_THRESH = (100, 200)  # matches data/paired.py and inference.py
 
 _SOLVERS = {"euler": euler, "midpoint": midpoint}
 _CKPT_DIR = "checkpoints"
@@ -55,12 +58,22 @@ def upload_checkpoint(repo_id, step):
         print(f"warning: HF upload failed: {e}")
 
 
+def _edge_ssim(tir_np, pred_np):
+    """Canny-edge SSIM between input TIR channel and predicted RGB (Phase-1 gate, PLAN.md 1.4)."""
+    tir_u8 = (tir_np * 255.0).clip(0, 255).astype("uint8")
+    pred_gray = cv2.cvtColor(((pred_np + 1.0) * 127.5).clip(0, 255).astype("uint8"), cv2.COLOR_RGB2GRAY)
+    edges_tir = cv2.Canny(tir_u8, *_CANNY_THRESH)
+    edges_pred = cv2.Canny(pred_gray, *_CANNY_THRESH)
+    return structural_similarity(edges_tir, edges_pred, data_range=255)
+
+
 @torch.no_grad()
 def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
-    """Sample RGB from val TIR, score against ground truth. Prints + logs val/ssim, val/mse."""
+    """Sample RGB from val TIR, score against ground truth. Prints + logs val/ssim, val/mse, val/edge_ssim."""
     solver = _SOLVERS[sampling_cfg["solver"]]
     rf.eval()
-    ssims, mses = [], []
+    ssims, mses, edge_ssims = [], [], []
+    samples = None
     for i, batch in enumerate(val_dl):
         if i >= val_batches:
             break
@@ -69,17 +82,35 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
         x0 = cond[:, 0:1].repeat(1, 3, 1, 1)
         x_pred = solver(rf, x0, cond, steps=sampling_cfg["steps"])
         mses.append(torch.mean((x_pred - x1) ** 2).item())
+        tir_np = cond[:, 0].cpu().numpy()
         pred_np = x_pred.permute(0, 2, 3, 1).cpu().numpy()
         gt_np = x1.permute(0, 2, 3, 1).cpu().numpy()
-        for p, g in zip(pred_np, gt_np):
+        for t, p, g in zip(tir_np, pred_np, gt_np):
             ssims.append(structural_similarity(g, p, channel_axis=2, data_range=2.0))
+            edge_ssims.append(_edge_ssim(t, p))
+        if i == 0 and use_wandb:
+            samples = (cond[:8, 0:1], x_pred[:8], x1[:8])
     rf.train()
     ssim, mse = sum(ssims) / len(ssims), sum(mses) / len(mses)
-    print(f"step {step} val/ssim {ssim:.4f} val/mse {mse:.4f}")
+    edge_ssim = sum(edge_ssims) / len(edge_ssims)
+    print(f"step {step} val/ssim {ssim:.4f} val/mse {mse:.4f} val/edge_ssim {edge_ssim:.4f}")
     if use_wandb:
         import wandb
+        from torchvision.utils import make_grid
 
-        wandb.log({"val/ssim": ssim, "val/mse": mse}, step=step)
+        tir3, pred, gt = samples
+        tir3 = tir3.repeat(1, 3, 1, 1)  # grayscale -> 3ch for the grid
+        grid_rows = torch.cat([tir3, (pred.clamp(-1, 1) + 1) / 2, (gt + 1) / 2], dim=0)
+        grid = make_grid(grid_rows, nrow=tir3.shape[0])
+        wandb.log(
+            {
+                "val/ssim": ssim,
+                "val/mse": mse,
+                "val/edge_ssim": edge_ssim,
+                "val/samples": wandb.Image(grid, caption="rows: TIR / pred / gt"),
+            },
+            step=step,
+        )
 
 
 def main():
