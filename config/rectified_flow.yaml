@@ -12,7 +12,7 @@ model:
   dropout: [0.0, 0.0, 0.1]
   mapping: {depth: 2, width: 256, d_ff: 512, dropout: 0.0}
 data: {root: data/, size: 256, clip_len: 1}
-train: {lr: 5.0e-4, weight_decay: 1.0e-3, betas: [0.9, 0.95], steps: 40000, batch_size: 16, save_every: 5000, log_every: 50, val_every: 5000, val_batches: 16, wandb: true, hf_repo: guychuk/h-dif}
-flow: {t_sampling: uniform}
+train: {lr: 5.0e-4, weight_decay: 1.0e-3, betas: [0.9, 0.95], steps: 40000, batch_size: 16, save_every: 5000, log_every: 50, val_every: 5000, val_batches: 16, wandb: true, hf_repo: guychuk/h-dif, ema_decay: 0.999, lr_min: 5.0e-5}
+flow: {t_sampling: logit_normal, cond_dropout: 0.1}
 temporal: {gamma: 0.35, enabled: false}
 sampling: {solver: midpoint, steps: 2}

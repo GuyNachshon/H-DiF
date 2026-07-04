@@ -11,9 +11,11 @@ def flow_batch(x0, x1, t):
 
 
 class RectifiedFlow(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, t_sampling="uniform", cond_dropout=0.0):
         super().__init__()
         self.model = model
+        self.t_sampling = t_sampling
+        self.cond_dropout = cond_dropout
 
     def forward(self, x_t, t, cond, cache=None):
         x = torch.cat([x_t, cond], dim=1)
@@ -23,7 +25,13 @@ class RectifiedFlow(nn.Module):
         return self.model(x, sigma, cache=cache)
 
     def loss(self, x0, x1, cond):
-        t = torch.rand(x0.shape[0], device=x0.device)
+        if self.t_sampling == "logit_normal":
+            t = torch.sigmoid(torch.randn(x0.shape[0], device=x0.device))
+        else:
+            t = torch.rand(x0.shape[0], device=x0.device)
+        if self.cond_dropout > 0:
+            keep = torch.rand(x0.shape[0], 1, 1, 1, device=x0.device) >= self.cond_dropout
+            cond = torch.where(keep, cond, torch.zeros_like(cond))
         x_t, v = flow_batch(x0, x1, t)
         v_pred = self(x_t, t, cond)
         return torch.mean((v_pred - v) ** 2)

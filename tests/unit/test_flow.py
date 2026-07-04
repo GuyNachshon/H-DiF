@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from flow.rectified import flow_batch, trajectory_straightness
+from flow.rectified import RectifiedFlow, flow_batch, trajectory_straightness
 from sampling.ode import euler, midpoint
 
 
@@ -41,3 +41,32 @@ def test_straightness_finite():
     rf = StubRF()
     s = trajectory_straightness(rf, torch.randn(2, 3, 8, 8), torch.randn(2, 3, 8, 8), None)
     assert math.isfinite(s) and s >= 0
+
+
+class _IdentityModel(torch.nn.Module):
+    def forward(self, x, sigma, cache=None):
+        return x[:, :3]  # v_pred = x_t channels, ignores cond channels
+
+
+def test_loss_logit_normal_t_sampling_runs():
+    rf = RectifiedFlow(_IdentityModel(), t_sampling="logit_normal")
+    x0, x1, cond = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8), torch.randn(4, 2, 8, 8)
+    loss = rf.loss(x0, x1, cond)
+    assert math.isfinite(loss.item())
+
+
+def test_loss_cond_dropout_zeroes_some_samples():
+    torch.manual_seed(0)
+    rf = RectifiedFlow(_IdentityModel(), cond_dropout=1.0)
+    x0, x1 = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8)
+    cond = torch.ones(4, 2, 8, 8)
+    seen = {}
+    orig_forward = rf.forward
+
+    def spy_forward(x_t, t, cond, cache=None):
+        seen["cond"] = cond
+        return orig_forward(x_t, t, cond, cache)
+
+    rf.forward = spy_forward
+    rf.loss(x0, x1, cond)
+    assert torch.all(seen["cond"] == 0)  # cond_dropout=1.0 -> always dropped

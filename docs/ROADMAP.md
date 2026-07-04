@@ -30,6 +30,8 @@ Repo built and tested (10/10 CPU tests). Load-bearing decisions, each independen
 
 **Deferred into this phase's full run:** EMA weights (AveragedModel, ~5 lines), LR schedule.
 
+**Pretrained-init verdict (2026-07-05, dual-verified):** PLAN §1.2's HDiT-1B/DiT-XL warm-start is not possible — the HDiT authors never released weights (GitHub/Zenodo/HF all checked; our config is byte-identical to their unweighted oxford-flowers recipe), and DiT-XL/EDM2 are incompatible architecture families (latent-space/U-Net, mismatched channels & conditioning). All runs are scratch-init. Long-term option if ever needed: self-pretrain this exact config on a generic RGB corpus first (separate budget decision).
+
 ## Phase 2 — Cross-Spectral Flow Refinement ⬜
 
 **Goal:** sharp, realistic global texture in ≤ 4 NFE. Gates: **FID ≤ 18.0** (static scenes), NFE ≤ 4 with Euler/midpoint.
