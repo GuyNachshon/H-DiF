@@ -36,6 +36,7 @@ if [ -d /workspace/h-dif/data ]; then
     DATA_ROOT_ARGS=(--data_root /root/data)
 fi
 
+export PYTHONUNBUFFERED=1  # never lose a traceback to block buffering through tee
 echo "starting training: config=$1"
 /root/venv/bin/python src/train.py --config "$1" "${DATA_ROOT_ARGS[@]}" 2>&1 | tee /workspace/logs/train.log
 EXIT_CODE=${PIPESTATUS[0]}
