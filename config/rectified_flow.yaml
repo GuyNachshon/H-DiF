@@ -1,0 +1,18 @@
+model:
+  in_channels: 5
+  out_channels: 3
+  patch_size: [4, 4]
+  widths: [128, 256, 512]
+  depths: [2, 2, 4]
+  d_ffs: [256, 512, 1024]
+  self_attns:
+    - {type: shifted-window, d_head: 64, window_size: 8}
+    - {type: shifted-window, d_head: 64, window_size: 8}
+    - {type: global, d_head: 64}
+  dropout: [0.0, 0.0, 0.1]
+  mapping: {depth: 2, width: 256, d_ff: 512, dropout: 0.0}
+data: {root: data/, size: 256, clip_len: 1}
+train: {lr: 5.0e-4, weight_decay: 1.0e-3, betas: [0.9, 0.95], steps: 200000, batch_size: 16, save_every: 5000, log_every: 50, wandb: false}
+flow: {t_sampling: uniform}
+temporal: {gamma: 0.35, enabled: false}
+sampling: {solver: midpoint, steps: 2}
