@@ -1,0 +1,77 @@
+# H-DiF Execution Roadmap
+
+Operational companion to [research/PLAN.md](research/PLAN.md). That doc defines *what* and *why*; this one tracks *how*, *with what*, and *where we are*. Update the status lines as phases close.
+
+---
+
+## Phase 0 — Scaffold ✅ (2026-07-04)
+
+Repo built and tested (10/10 CPU tests). Load-bearing decisions, each independently reached by two designers (Opus + Codex):
+
+| Decision | Rationale |
+|---|---|
+| Vendor k-diffusion's `image_transformer_v2.py` → `src/models/hdit.py` (git rev `4601bf0`; PyPI never shipped HDiT) | Attention-residual cache needs pre-softmax logits; fused SDPA never materializes them. Two surgical edits: `cache=` threading + explicit-softmax branch gated on `use_cache`. |
+| Attention cache **only at the global-attention bottleneck** (~256 tokens @ 256²) | Outer width-128 level = 4096 tokens ≈ 1GB/head if materialized; it's shifted-window anyway. Enforced by `build.py` assert (`hw ≤ 1024`). |
+| Own rectified-flow loss + Euler/midpoint samplers (~30 lines) | k-diffusion's wrappers are EDM/sigma-shaped. CaReFlow/PMRF deliberately NOT built — they're escape hatches, `trajectory_straightness()` measures whether we need them. |
+| `in_channels=5` = RGB `x_t` ⊕ [TIR, Canny] conditioning | Keeps the API stable regardless of the open Phase-2 x0 question. |
+| No NATTEN / flash-attn anywhere | Wheel-availability risk; shifted-window outer config is pure PyTorch. |
+
+## Phase 1 — Foundational Bridge 🔄 (in progress)
+
+**Goal:** validate the thermal→RGB rectified-flow bridge learns structure. Gate: **edge-SSIM ≥ 0.90** (SSIM on Canny outlines of input TIR vs. generated RGB — PLAN §1.4; raw-image SSIM is *not* the gate since colors are underdetermined).
+
+**Current run (signal run):**
+- 40k steps, batch 16, 256², bf16, RTX 4090 (RunPod EU-RO-1, $0.69/hr), est. 4-5h ≈ $3-5
+- Data: KAIST (HF mirror, stride-5 ≈ 9.5k train pairs + 2.2k official-test val) + LLVIP (12k train / 3.5k val stills). ~22k train / ~5.7k val total.
+- Val every 5k steps: raw SSIM, edge-SSIM, MSE, sample grids → wandb project `h-dif`; checkpoints → HF `GuyNachshon/h-dif` (private)
+- Hardened: resume (weights+opt+step+wandb id), grad clip 1.0, non-finite-loss skip guard, headless opencv
+
+**Then:** if edge-SSIM trends toward the gate → full 200k run on the same volume (data persists). If fine structures blur → increase outer `depths` / skip-connection weight (PLAN §1.4 risk flag).
+
+**Deferred into this phase's full run:** EMA weights (AveragedModel, ~5 lines), LR schedule.
+
+## Phase 2 — Cross-Spectral Flow Refinement ⬜
+
+**Goal:** sharp, realistic global texture in ≤ 4 NFE. Gates: **FID ≤ 18.0** (static scenes), NFE ≤ 4 with Euler/midpoint.
+
+Work items, in order:
+1. Add FID eval script (holdout KAIST/LLVIP partitions).
+2. Measure `trajectory_straightness` across checkpoints — decide from data:
+   - Straight enough → ship, skip CaReFlow/PMRF entirely.
+   - Curved (needs ≥10 steps for sharpness) → PMRF alignment step; hallucination across spectra → CaReFlow cyclic constraint (mirror backward velocity).
+3. **Open research question (PLAN §2.5):** one-to-many color mapping (identical thermal signature → many valid colors). Does the flow average to gray? Diagnose from val samples; candidate fixes (in escalation order): stochastic x0 perturbation, CFG-style conditioning dropout, conditional discriminator at outer layers (PLAN Phase-4 fallback).
+4. **x0 formulation decision** (currently: TIR broadcast to 3ch): compare vs. noise-seeded x0 on the same 40k budget. One A/B, pick, move on.
+
+## Phase 3 — Temporal Stabilization ⬜
+
+**Goal:** flicker-free video. Gates: **FVD ≤ 350**, static-region temporal variance ≤ 1.5% over 500 frames.
+
+The machinery already exists (`AttnResidualCache`, `throttle_gamma`, RAFT wrapper, `clip_len` in dataset) — this phase *activates and tunes* it:
+1. Flip `temporal.enabled: true`; train with `clip_len > 1` (KAIST provides real video clips; LLVIP stills contribute only to the spatial loss).
+2. Add the multi-frame temporal velocity loss (penalize intensity shifts unless RAFT flow explains them) — the one Phase-3 piece not yet coded.
+3. Tune γ from 0.35 with the throttle curve; ghosting on moving objects ⇒ γ too high (PLAN §3.3).
+4. FVD eval over 60s continuous blocks.
+5. **Open question (PLAN §3.4):** parallax from loosely-calibrated rigs — KAIST's rig misalignment is the natural testbed.
+
+## Phase 4 — Evaluation Matrix & Deployment ⬜
+
+Run the full PLAN §4 matrix; each row has a prescribed fallback:
+
+| Metric | Target | Fallback if missed |
+|---|---|---|
+| LPIPS | ≤ 0.12 | conditional multi-scale discriminator at outer layers |
+| Color drift (static, 500 frames) | ≤ 1.5% | 3D spatiotemporal conv wrapper on cross-attention |
+| Throughput (1× RTX 4090) | ≥ 20 FPS | Rectified-CFG++ / patch-pruning static blocks |
+| FP16 TensorRT vs FP32 | ≤ 4.5% loss | QAT on outer transformer projections |
+
+Deployment: ONNX export → TensorRT FP16 engine → `inference.py` RTSP streaming path (already stubbed).
+
+---
+
+## Operations
+
+- **Infra:** RunPod pod `h-dif-phase1` (4090, EU-RO-1) + 200GB network volume `h-dif-data` (datasets persist across pods). Driver 570 ⇒ swap torch to cu128 wheels on pod (`uv pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision --reinstall-package ...`).
+- **Data sources:** KAIST official links are dead; use HF mirror `koifisharriet/KAIST-Multispectral-Pedestrian-Benchmark` (stride-filter with `allow_patterns` — HF fetches ~7 files/s, so file count dominates). LLVIP via gdown `1VTlT3Y7e1h-Zsne4zahjx5q0TK2ClMVv`.
+- **Tracking:** wandb project `h-dif`; artifacts/checkpoints → HF `GuyNachshon/h-dif`; code → GitHub `GuyNachshon/H-DiF`.
+- **Budget:** signal runs ~$5; full 200k run ~$16-20 on 4090. Balance-check `runpodctl user` before long runs. Stop pods after runs — the volume keeps the data.
+- **Workflow:** Fable orchestrates; reasoning → deep-reasoner (Opus), mechanical → fast-worker, independent second designs/audits → Codex; high-stakes calls get Opus + Codex in parallel, synthesized blind.
