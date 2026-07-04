@@ -17,9 +17,17 @@ set +a
 mkdir -p /workspace/logs
 
 DATA_ROOT_ARGS=()
-if [ -d /workspace/h-dif/data ] && [ ! -d /root/data ]; then
-    echo "staging data: /workspace/h-dif/data -> /root/data (local NVMe)"
-    time rsync -a /workspace/h-dif/data/ /root/data/
+if [ -d /workspace/h-dif/data ]; then
+    # Stage only the train split on local NVMe (read every step; the full dataset
+    # doesn't fit the 40GB container disk next to the venv). Val stays on the
+    # volume via symlink — it's read once per val_every steps.
+    if [ ! -f /root/data/.staged ]; then
+        echo "staging train split: /workspace/h-dif/data/train -> /root/data/train (local NVMe)"
+        mkdir -p /root/data
+        time rsync -a --delete /workspace/h-dif/data/train/ /root/data/train/
+        ln -sfn /workspace/h-dif/data/val /root/data/val
+        touch /root/data/.staged
+    fi
     DATA_ROOT_ARGS=(--data_root /root/data)
 fi
 
