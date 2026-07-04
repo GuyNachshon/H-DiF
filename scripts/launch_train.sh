@@ -8,7 +8,11 @@ set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
+# set -a so sourced keys are exported to the python child (wandb/HF need them).
+# RUNPOD_POD_ID isn't visible in ssh/tmux sessions — put it in .env too for auto-stop.
+set -a
 source .env
+set +a
 
 mkdir -p /workspace/logs
 
