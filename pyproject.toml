@@ -9,7 +9,7 @@ dependencies = [
     "huggingface-hub>=1.22.0",
     "k-diffusion",
     "lpips>=0.1.4",
-    "opencv-python>=4.11.0.86",
+    "opencv-python-headless>=4.11.0.86",
     "pyyaml>=6.0.3",
     "safetensors>=0.8.0",
     "scikit-image>=0.26.0",
