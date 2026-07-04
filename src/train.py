@@ -238,6 +238,7 @@ def main():
     autocast_enabled = torch.cuda.is_available()
     skipped_steps = 0
     last_log_time = time.time()
+    last_val_step = None
     while step < train_cfg["steps"]:
         for batch in dl:
             cond = batch["tir"].to(device)
@@ -283,14 +284,17 @@ def main():
                     upload_checkpoint(hf_repo, step)
             if val_dl is not None and step > 0 and step % train_cfg["val_every"] == 0:
                 run_val(ema_rf, val_dl, cfg["sampling"], train_cfg["val_batches"], device, use_wandb, step, flow_cfg)
+                last_val_step = step
             step += 1
             if step >= train_cfg["steps"]:
                 break
 
-    # The in-loop save above checks step before this increment, so it can never see
-    # step == train_cfg["steps"] -- the final step is never saved there. Save it now,
-    # guarding only against the (impossible today, cheap to guard) case of steps == 0.
+    # The in-loop save/val above check step before this increment, so they can never see
+    # step == train_cfg["steps"] -- the final step is never saved/validated there. Do both
+    # now, guarding only against the (impossible today, cheap to guard) case of steps == 0.
     if step > 0:
+        if val_dl is not None and step != last_val_step:
+            run_val(ema_rf, val_dl, cfg["sampling"], train_cfg["val_batches"], device, use_wandb, step, flow_cfg)
         save_checkpoint(model, ema_model, opt, scheduler, step, wandb_run_id)
         if hf_repo:
             upload_checkpoint(hf_repo, step)
