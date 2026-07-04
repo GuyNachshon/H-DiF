@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from flow.rectified import RectifiedFlow, flow_batch, trajectory_straightness
+from flow.rectified import RectifiedFlow, flow_batch, make_x0, trajectory_straightness
 from sampling.ode import euler, midpoint
 
 
@@ -53,6 +53,27 @@ def test_loss_logit_normal_t_sampling_runs():
     x0, x1, cond = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8), torch.randn(4, 2, 8, 8)
     loss = rf.loss(x0, x1, cond)
     assert math.isfinite(loss.item())
+
+
+def test_make_x0_shapes():
+    cond = torch.randn(4, 2, 8, 8)
+    for mode in ("noise", "tir", "blend"):
+        x0 = make_x0(cond, mode=mode)
+        assert x0.shape == (4, 3, 8, 8)
+
+
+def test_make_x0_tir_alpha_zero_is_exact_broadcast():
+    cond = torch.randn(4, 2, 8, 8)
+    tir3 = cond[:, 0:1].repeat(1, 3, 1, 1)
+    assert torch.allclose(make_x0(cond, mode="blend", alpha=0.0), tir3)
+    assert torch.allclose(make_x0(cond, mode="tir"), tir3)
+
+
+def test_make_x0_blend_alpha_one_is_noise_like():
+    torch.manual_seed(0)
+    cond = torch.randn(64, 2, 16, 16)
+    x0 = make_x0(cond, mode="blend", alpha=1.0)
+    assert abs(x0.std().item() - 1.0) < 0.05
 
 
 def test_loss_cond_dropout_zeroes_some_samples():

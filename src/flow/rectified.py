@@ -2,6 +2,24 @@ import torch
 from torch import nn
 
 
+def make_x0(cond, mode="noise", alpha=0.7):
+    """Starting point x0 for the flow, matching cond's RGB shape (B,3,H,W).
+
+    - "noise": pure Gaussian noise (best color/diversity, loose structure).
+    - "tir": TIR channel broadcast to 3ch (best structure, color collapse).
+    - "blend": alpha*noise + (1-alpha)*tir, interpolating the two.
+    """
+    tir3 = cond[:, 0:1].repeat(1, 3, 1, 1)
+    if mode == "tir":
+        return tir3
+    noise = torch.randn_like(tir3)
+    if mode == "noise":
+        return noise
+    if mode == "blend":
+        return alpha * noise + (1 - alpha) * tir3
+    raise ValueError(f"unknown x0_mode: {mode}")
+
+
 def flow_batch(x0, x1, t):
     """x_t = (1-t)*x0 + t*x1 ; v = x1 - x0. t: [B] broadcast to [B,1,1,1]."""
     t = t.view(-1, 1, 1, 1)

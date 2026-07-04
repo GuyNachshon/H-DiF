@@ -10,7 +10,7 @@ from skimage.metrics import structural_similarity
 from torch.utils.data import DataLoader
 
 from data.paired import PairedThermalRGB
-from flow.rectified import RectifiedFlow
+from flow.rectified import RectifiedFlow, make_x0
 from models.build import build_hdit
 from sampling.ode import euler, midpoint
 
@@ -110,8 +110,11 @@ def _edge_ssim(tir_np, pred_np):
 
 
 @torch.no_grad()
-def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
+def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step, flow_cfg=None):
     """Sample RGB from val TIR, score against ground truth. Prints + logs val/ssim, val/mse, val/edge_ssim."""
+    flow_cfg = flow_cfg or {}
+    x0_mode = flow_cfg.get("x0_mode", "noise")
+    x0_alpha = flow_cfg.get("x0_alpha", 0.7)
     solver = _SOLVERS[sampling_cfg["solver"]]
     rf.eval()
     ssims, mses, edge_ssims = [], [], []
@@ -121,7 +124,7 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
             break
         cond = batch["tir"].to(device)
         x1 = batch["rgb"].to(device)
-        x0 = torch.randn_like(x1)
+        x0 = make_x0(cond, mode=x0_mode, alpha=x0_alpha)
         x_pred = solver(rf, x0, cond, steps=sampling_cfg["steps"])
         mses.append(torch.mean((x_pred - x1) ** 2).item())
         tir_np = cond[:, 0].cpu().numpy()
@@ -131,7 +134,7 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
             ssims.append(structural_similarity(g, p, channel_axis=2, data_range=2.0))
             edge_ssims.append(_edge_ssim(t, p))
         if i == 0 and use_wandb:
-            x_pred2 = solver(rf, torch.randn_like(x1), cond, steps=sampling_cfg["steps"])
+            x_pred2 = solver(rf, make_x0(cond, mode=x0_mode, alpha=x0_alpha), cond, steps=sampling_cfg["steps"])
             samples = (cond[:8, 0:1], x_pred[:8], x_pred2[:8], x1[:8])
     rf.train()
     ssim, mse = sum(ssims) / len(ssims), sum(mses) / len(mses)
@@ -239,7 +242,7 @@ def main():
         for batch in dl:
             cond = batch["tir"].to(device)
             x1 = batch["rgb"].to(device)
-            x0 = torch.randn_like(x1)
+            x0 = make_x0(cond, mode=flow_cfg.get("x0_mode", "noise"), alpha=flow_cfg.get("x0_alpha", 0.7))
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast_enabled):
                 loss = rf.loss(x0, x1, cond)
 
@@ -279,7 +282,7 @@ def main():
                 if hf_repo:
                     upload_checkpoint(hf_repo, step)
             if val_dl is not None and step > 0 and step % train_cfg["val_every"] == 0:
-                run_val(ema_rf, val_dl, cfg["sampling"], train_cfg["val_batches"], device, use_wandb, step)
+                run_val(ema_rf, val_dl, cfg["sampling"], train_cfg["val_batches"], device, use_wandb, step, flow_cfg)
             step += 1
             if step >= train_cfg["steps"]:
                 break

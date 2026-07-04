@@ -7,7 +7,7 @@ import yaml
 from safetensors.torch import load_file
 
 from data.paired import _resize_center_crop
-from flow.rectified import RectifiedFlow
+from flow.rectified import RectifiedFlow, make_x0
 from models.build import build_hdit
 from sampling.ode import midpoint
 from temporal.cache import AttnResidualCache
@@ -46,6 +46,10 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     writer = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (size, size))
 
+    flow_cfg = cfg.get("flow", {})
+    x0_mode = flow_cfg.get("x0_mode", "noise")
+    x0_alpha = flow_cfg.get("x0_alpha", 0.7)
+
     cache = AttnResidualCache(gamma=cfg["temporal"]["gamma"])
     cache.reset()
     while True:
@@ -53,7 +57,7 @@ def main():
         if not ok:
             break
         cond = _cond_from_frame(frame, size).to(device)
-        x0 = cond[:, 0:1].repeat(1, 3, 1, 1)
+        x0 = make_x0(cond, mode=x0_mode, alpha=x0_alpha)
         out = midpoint(rf, x0, cond, steps, cache=cache)
         img = ((out[0].clamp(-1, 1) + 1) * 127.5).byte().cpu().numpy().transpose(1, 2, 0)
         writer.write(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
