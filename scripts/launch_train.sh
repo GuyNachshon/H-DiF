@@ -25,7 +25,12 @@ if [ -d /workspace/h-dif/data ]; then
         echo "staging train split: /workspace/h-dif/data/train -> /root/data/train (local NVMe)"
         mkdir -p /root/data
         time rsync -a --delete /workspace/h-dif/data/train/ /root/data/train/
-        ln -sfn /workspace/h-dif/data/val /root/data/val
+        RSYNC_STATUS=$?
+        if [ "$RSYNC_STATUS" -ne 0 ] || ! ln -sfn /workspace/h-dif/data/val /root/data/val; then
+            rm -f /root/data/.staged
+            echo "ERROR: data staging failed (rsync exit $RSYNC_STATUS)"
+            exit 1
+        fi
         touch /root/data/.staged
     fi
     DATA_ROOT_ARGS=(--data_root /root/data)
@@ -34,6 +39,10 @@ fi
 echo "starting training: config=$1"
 /root/venv/bin/python src/train.py --config "$1" "${DATA_ROOT_ARGS[@]}" 2>&1 | tee /workspace/logs/train.log
 EXIT_CODE=${PIPESTATUS[0]}
+TEE_STATUS=${PIPESTATUS[1]}
+if [ "$TEE_STATUS" -ne 0 ]; then
+    echo "warning: tee exited with code $TEE_STATUS, train.log may be incomplete"
+fi
 
 echo "training exited with code $EXIT_CODE"
 echo "$EXIT_CODE" > /workspace/logs/TRAIN_EXITED
@@ -43,8 +52,15 @@ echo "$EXIT_CODE" > /workspace/logs/TRAIN_EXITED
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ ! -f /workspace/KEEP_ALIVE ]; then
     if [ -n "${RUNPOD_API_KEY:-}" ]; then
         echo "auto-stopping pod $RUNPOD_POD_ID"
-        curl -s -X POST "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID/stop" \
-            -H "Authorization: Bearer $RUNPOD_API_KEY"
+        if ! curl -sf --max-time 30 -X POST "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID/stop" \
+            -H "Authorization: Bearer $RUNPOD_API_KEY"; then
+            echo "auto-stop request failed, retrying once in 10s"
+            sleep 10
+            if ! curl -sf --max-time 30 -X POST "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID/stop" \
+                -H "Authorization: Bearer $RUNPOD_API_KEY"; then
+                echo "AUTO-STOP FAILED (code $?) — POD STILL RUNNING AND BILLING"
+            fi
+        fi
     else
         echo "RUNPOD_API_KEY not set, skipping auto-stop"
     fi

@@ -73,7 +73,7 @@ Deployment: ONNX export → TensorRT FP16 engine → `inference.py` RTSP streami
 
 ## Operations
 
-- **Infra:** RunPod pod `h-dif-phase1` (4090, EU-RO-1) + 200GB network volume `h-dif-data` (datasets persist across pods). Driver 570 ⇒ swap torch to cu128 wheels on pod (`uv pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision --reinstall-package ...`).
+- **Infra:** RunPod pod `h-dif-phase1` (4090, EU-RO-1) + 200GB network volume `h-dif-data` (datasets persist across pods). Driver 570 ⇒ cu128 torch, resolved natively by uv.lock's Linux fork. **40GB container disk is too small** for venv (7G) + full staged dataset (~28G) — provision **100GB+** for the 200k run; until then only the train split stages to NVMe (launch_train.sh handles it).
 - **Data sources:** KAIST official links are dead; use HF mirror `koifisharriet/KAIST-Multispectral-Pedestrian-Benchmark` (stride-filter with `allow_patterns` — HF fetches ~7 files/s, so file count dominates). LLVIP via gdown `1VTlT3Y7e1h-Zsne4zahjx5q0TK2ClMVv`.
 - **Tracking:** wandb project `h-dif`; artifacts/checkpoints → HF `GuyNachshon/h-dif`; code → GitHub `GuyNachshon/H-DiF`.
 - **Budget:** signal runs ~$5; full 200k run ~$16-20 on 4090. Balance-check `runpodctl user` before long runs. Stop pods after runs — the volume keeps the data.

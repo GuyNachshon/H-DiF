@@ -21,33 +21,49 @@ _CKPT_DIR = "checkpoints"
 _EMA_WARMUP_STEPS = 1000
 
 
+def _atomic_save_file(state_dict, path):
+    tmp = path + ".tmp"
+    save_file(state_dict, tmp)
+    os.replace(tmp, path)
+
+
+def _atomic_torch_save(obj, path):
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def save_checkpoint(model, ema_model, opt, scheduler, step, wandb_run_id):
-    save_file(model.state_dict(), os.path.join(_CKPT_DIR, f"step_{step}.safetensors"))
-    torch.save(
+    _atomic_save_file(model.state_dict(), os.path.join(_CKPT_DIR, f"step_{step}.safetensors"))
+    _atomic_torch_save(
         {"opt": opt.state_dict(), "scheduler": scheduler.state_dict(), "step": step, "wandb_run_id": wandb_run_id},
         os.path.join(_CKPT_DIR, "latest.pt"),
     )
     # ponytail: "latest.pt" always points at the most recent save; weights file is named by step for HF history.
-    save_file(model.state_dict(), os.path.join(_CKPT_DIR, "latest.safetensors"))
-    save_file(ema_model.module.state_dict(), os.path.join(_CKPT_DIR, f"step_{step}.ema.safetensors"))
-    save_file(ema_model.module.state_dict(), os.path.join(_CKPT_DIR, "latest.ema.safetensors"))
+    _atomic_save_file(model.state_dict(), os.path.join(_CKPT_DIR, "latest.safetensors"))
+    _atomic_save_file(ema_model.module.state_dict(), os.path.join(_CKPT_DIR, f"step_{step}.ema.safetensors"))
+    _atomic_save_file(ema_model.module.state_dict(), os.path.join(_CKPT_DIR, "latest.ema.safetensors"))
 
 
 def load_checkpoint(model, ema_model, opt, scheduler, device):
     latest = os.path.join(_CKPT_DIR, "latest.pt")
     if not os.path.exists(latest):
         return 0, None
-    state = torch.load(latest, map_location=device, weights_only=True)
-    model.load_state_dict(load_file(os.path.join(_CKPT_DIR, "latest.safetensors")))
-    opt.load_state_dict(state["opt"])
-    scheduler.load_state_dict(state["scheduler"])
-    ema_path = os.path.join(_CKPT_DIR, "latest.ema.safetensors")
-    if os.path.exists(ema_path):
-        ema_model.module.load_state_dict(load_file(ema_path))
-    else:
-        print("warning: no EMA checkpoint found, re-initializing EMA from model weights")
-        ema_model.module.load_state_dict(model.state_dict())
-    return state["step"], state.get("wandb_run_id")
+    try:
+        state = torch.load(latest, map_location=device, weights_only=True)
+        model.load_state_dict(load_file(os.path.join(_CKPT_DIR, "latest.safetensors")))
+        opt.load_state_dict(state["opt"])
+        scheduler.load_state_dict(state["scheduler"])
+        ema_path = os.path.join(_CKPT_DIR, "latest.ema.safetensors")
+        if os.path.exists(ema_path):
+            ema_model.module.load_state_dict(load_file(ema_path))
+        else:
+            print("warning: no EMA checkpoint found, re-initializing EMA from model weights")
+            ema_model.module.load_state_dict(model.state_dict())
+        return state["step"], state.get("wandb_run_id")
+    except Exception as e:
+        print(f"warning: corrupt checkpoint, starting fresh — inspect checkpoints/ manually ({e})")
+        return 0, None
 
 
 def upload_checkpoint(repo_id, step):
@@ -73,6 +89,15 @@ def upload_checkpoint(repo_id, step):
             )
     except Exception as e:
         print(f"warning: HF upload failed: {e}")
+
+
+def _wandb_log(payload, step):
+    try:
+        import wandb
+
+        wandb.log(payload, step=step)
+    except Exception as e:
+        print(f"warning: wandb.log failed at step {step}: {e}")
 
 
 def _edge_ssim(tir_np, pred_np):
@@ -122,14 +147,14 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step):
             [tir3, (pred0.clamp(-1, 1) + 1) / 2, (pred1.clamp(-1, 1) + 1) / 2, (gt + 1) / 2], dim=0
         )
         grid = make_grid(grid_rows, nrow=tir3.shape[0])
-        wandb.log(
+        _wandb_log(
             {
                 "val/ssim": ssim,
                 "val/mse": mse,
                 "val/edge_ssim": edge_ssim,
                 "val/samples": wandb.Image(grid, caption="rows: TIR / pred_seed0 / pred_seed1 / gt"),
             },
-            step=step,
+            step,
         )
 
 
@@ -239,7 +264,7 @@ def main():
                 last_log_time = time.time()
                 print(f"step {step} loss {loss.item():.4f} grad_norm {grad_norm:.4f} skipped {skipped_steps}")
                 if use_wandb:
-                    wandb.log(
+                    _wandb_log(
                         {
                             "loss": loss.item(),
                             "lr": opt.param_groups[0]["lr"],
@@ -247,7 +272,7 @@ def main():
                             "steps_per_sec": steps_per_sec,
                             "skipped_steps": skipped_steps,
                         },
-                        step=step,
+                        step,
                     )
             if step > 0 and step % train_cfg["save_every"] == 0:
                 save_checkpoint(model, ema_model, opt, scheduler, step, wandb_run_id)
