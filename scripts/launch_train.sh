@@ -51,8 +51,9 @@ LOG="/workspace/logs/train-${RUN_TAG}.log"
 ln -sfn "$LOG" /workspace/logs/train.log   # stable path for tails; real file is per-run
 echo "starting training: config=$1 log=$LOG"
 /root/venv/bin/python src/train.py --config "$1" "${DATA_ROOT_ARGS[@]}" 2>&1 | tee "$LOG"
-EXIT_CODE=${PIPESTATUS[0]}
-TEE_STATUS=${PIPESTATUS[1]}
+PIPE_CODES=("${PIPESTATUS[@]}")  # capture once; reading PIPESTATUS resets it
+EXIT_CODE=${PIPE_CODES[0]}
+TEE_STATUS=${PIPE_CODES[1]:-0}
 if [ "$TEE_STATUS" -ne 0 ]; then
     echo "warning: tee exited with code $TEE_STATUS, train.log may be incomplete"
 fi
