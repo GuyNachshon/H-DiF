@@ -22,6 +22,11 @@ from skimage.metrics import structural_similarity
 from torch.utils.data import DataLoader
 from transformers import CLIPTextModel, CLIPTokenizer
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # src/ on path when run as a script
+
 from data.paired import PairedThermalRGB
 from eval_metrics import colorfulness, edge_recall
 
