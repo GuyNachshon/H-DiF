@@ -1,5 +1,17 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
+
+_SOBEL_X = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+_SOBEL_Y = _SOBEL_X.transpose(2, 3).contiguous()
+
+
+def _grad_mag(img):
+    """[B,3,H,W] in [-1,1] -> luma Sobel gradient magnitude [B,1,H,W]."""
+    luma = 0.299 * img[:, 0:1] + 0.587 * img[:, 1:2] + 0.114 * img[:, 2:3]
+    gx = F.conv2d(luma, _SOBEL_X.to(img.device, img.dtype), padding=1)
+    gy = F.conv2d(luma, _SOBEL_Y.to(img.device, img.dtype), padding=1)
+    return torch.sqrt(gx * gx + gy * gy + 1e-6)
 
 
 def make_x0(cond, mode="noise", alpha=0.7):
@@ -29,11 +41,12 @@ def flow_batch(x0, x1, t):
 
 
 class RectifiedFlow(nn.Module):
-    def __init__(self, model, t_sampling="uniform", cond_dropout=0.0):
+    def __init__(self, model, t_sampling="uniform", cond_dropout=0.0, edge_weight=0.0):
         super().__init__()
         self.model = model
         self.t_sampling = t_sampling
         self.cond_dropout = cond_dropout
+        self.edge_weight = edge_weight
 
     def forward(self, x_t, t, cond, cache=None):
         x = torch.cat([x_t, cond], dim=1)
@@ -52,7 +65,15 @@ class RectifiedFlow(nn.Module):
             cond = torch.where(keep, cond, torch.zeros_like(cond))
         x_t, v = flow_batch(x0, x1, t)
         v_pred = self(x_t, t, cond)
-        return torch.mean((v_pred - v) ** 2)
+        flow_loss = torch.mean((v_pred - v) ** 2)
+        if self.edge_weight > 0:
+            x1_hat = x_t + (1 - t.view(-1, 1, 1, 1)) * v_pred
+            edge_pred = _grad_mag(x1_hat)
+            edge_pred = edge_pred / (edge_pred.amax(dim=(2, 3), keepdim=True) + 1e-6)
+            w_t = 1 - t.view(-1, 1, 1, 1)  # gradient is degenerate at high t; weight low t
+            edge_loss = torch.mean(w_t * (edge_pred - cond[:, 1:2]) ** 2)
+            return flow_loss + self.edge_weight * edge_loss
+        return flow_loss
 
 
 @torch.no_grad()

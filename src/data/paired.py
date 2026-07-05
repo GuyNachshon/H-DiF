@@ -28,6 +28,7 @@ class PairedThermalRGB(Dataset):
     def __init__(self, root, split, size=256, clip_len=1):
         self.size = size
         self.clip_len = clip_len
+        self.train = split == "train"
         clips_root = os.path.join(root, split, "clips")
         if not os.path.isdir(clips_root):
             raise FileNotFoundError(f"data root missing: {clips_root}")
@@ -58,12 +59,17 @@ class PairedThermalRGB(Dataset):
 
     def __getitem__(self, i):
         clip_id, clip_dir, idx = self.frames[i]
+        flip = self.train and np.random.rand() < 0.5
         if self.clip_len > 1:
             conds, rgbs = [], []
             for j in range(self.clip_len):
                 c, r = self._load_one(clip_dir, idx + j)
                 conds.append(c)
                 rgbs.append(r)
-            return {"tir": torch.stack(conds), "rgb": torch.stack(rgbs), "clip_id": clip_id, "frame_idx": idx}
-        cond, rgb = self._load_one(clip_dir, idx)
+            cond, rgb = torch.stack(conds), torch.stack(rgbs)
+        else:
+            cond, rgb = self._load_one(clip_dir, idx)
+        if flip:
+            cond = torch.flip(cond, dims=[-1])
+            rgb = torch.flip(rgb, dims=[-1])
         return {"tir": cond, "rgb": rgb, "clip_id": clip_id, "frame_idx": idx}

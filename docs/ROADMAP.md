@@ -26,6 +26,8 @@ Repo built and tested (10/10 CPU tests). Load-bearing decisions, each independen
 - Val every 5k steps: raw SSIM, edge-SSIM, MSE, sample grids → wandb project `h-dif`; checkpoints → HF `GuyNachshon/h-dif` (private)
 - Hardened: resume (weights+opt+step+wandb id), grad clip 1.0, non-finite-loss skip guard, headless opencv
 
+**Run 1-3 + sweep verdicts (2026-07-05):** run 1 (TIR x0): edge-SSIM 0.92, color collapsed. Run 2 (noise x0): color fixed, structure 0.49-0.59 (NFE-48 ceiling 0.71 = representational limit). Run 3 (blend α=0.7): 0.73/color alive. α-sweep: α≤0.55 hits a training cliff (α=0.45 → garbage) — α is NOT a viable dial to 0.90. Inference-time edge guidance: inert (falsified). 200k recipe: α=0.7 + differentiable Sobel edge loss (w=0.5, (1-t)-weighted) + [2,2,8] + stride-2 KAIST + hflip + euler-4.
+
 **Then:** if edge-SSIM trends toward the gate → full 200k run on the same volume (data persists). If fine structures blur → increase outer `depths` / skip-connection weight (PLAN §1.4 risk flag).
 
 **Deferred into this phase's full run:** EMA weights (AveragedModel, ~5 lines), LR schedule.

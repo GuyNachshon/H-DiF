@@ -183,7 +183,12 @@ def main():
     model_cfg = dict(cfg["model"], size=cfg["data"]["size"])
     flow_cfg = cfg.get("flow", {})
     model = build_hdit(model_cfg).to(device)
-    rf = RectifiedFlow(model, t_sampling=flow_cfg.get("t_sampling", "uniform"), cond_dropout=flow_cfg.get("cond_dropout", 0.0)).to(device)
+    rf = RectifiedFlow(
+        model,
+        t_sampling=flow_cfg.get("t_sampling", "uniform"),
+        cond_dropout=flow_cfg.get("cond_dropout", 0.0),
+        edge_weight=flow_cfg.get("edge_weight", 0.0),
+    ).to(device)
 
     ema_decay = train_cfg.get("ema_decay", 0.999)
     ema_model = torch.optim.swa_utils.AveragedModel(

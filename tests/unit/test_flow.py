@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from flow.rectified import RectifiedFlow, flow_batch, make_x0, trajectory_straightness
+from flow.rectified import RectifiedFlow, _grad_mag, flow_batch, make_x0, trajectory_straightness
 from sampling.ode import euler, midpoint
 
 
@@ -91,3 +91,44 @@ def test_loss_cond_dropout_zeroes_some_samples():
     rf.forward = spy_forward
     rf.loss(x0, x1, cond)
     assert torch.all(seen["cond"] == 0)  # cond_dropout=1.0 -> always dropped
+
+
+def test_grad_mag_peaks_at_stripe_boundary():
+    img = -torch.ones(1, 3, 16, 16)
+    img[:, :, :, 8:] = 1.0  # vertical stripe boundary at column 8
+    mag = _grad_mag(img)
+    peak_col = mag[0, 0, 8, :].argmax().item()
+    assert peak_col in (7, 8)
+
+
+class _V0Model(torch.nn.Module):
+    """v_pred = 0 everywhere, regardless of edge_weight."""
+
+    def forward(self, x, sigma, cache=None):
+        return torch.zeros_like(x[:, :3])
+
+
+def test_edge_loss_adds_nonnegative_mass():
+    torch.manual_seed(0)
+    x0, x1 = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8)
+    cond = torch.rand(4, 2, 8, 8)
+
+    torch.manual_seed(1)
+    rf0 = RectifiedFlow(_V0Model(), edge_weight=0.0)
+    loss0 = rf0.loss(x0, x1, cond)
+
+    torch.manual_seed(1)
+    rf1 = RectifiedFlow(_V0Model(), edge_weight=0.5)
+    loss1 = rf1.loss(x0, x1, cond)
+
+    assert math.isfinite(loss0.item()) and math.isfinite(loss1.item())
+    assert loss1.item() > loss0.item()
+
+
+def test_x1_hat_round_trip_with_exact_v():
+    torch.manual_seed(0)
+    x0, x1 = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8)
+    t = torch.rand(4)
+    x_t, v = flow_batch(x0, x1, t)
+    x1_hat = x_t + (1 - t.view(-1, 1, 1, 1)) * v
+    assert torch.allclose(x1_hat, x1, atol=1e-6)
