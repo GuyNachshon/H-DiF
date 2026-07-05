@@ -318,17 +318,16 @@ def main():
 
             if not torch.isfinite(loss):
                 skipped_steps += 1
-                step += 1
                 opt.zero_grad()
                 accum_count = 0
                 continue
 
             loss.backward()
             accum_count += 1
+            # step counts OPTIMIZER steps only — micro-batches don't advance it,
+            # otherwise log/save/val (even thresholds) never align with opt
+            # iterations (step ≡ 3 mod 4) and the run trains silently forever.
             if accum_count < grad_accum:
-                step += 1
-                if step >= train_cfg["steps"]:
-                    break
                 continue
             accum_count = 0
 
