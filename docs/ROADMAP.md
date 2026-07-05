@@ -55,6 +55,16 @@ Work items, in order:
 4. **x0 formulation decision** (currently: TIR broadcast to 3ch): compare vs. noise-seeded x0 on the same 40k budget. One A/B, pick, move on.
 5. **Optimizer A/B before the 200k run:** AdamW (control, current recipe) vs. **Muon** — well-validated sample-efficiency gains on transformer pretraining; a 40k A/B costs ~$4. **Gefen** (github.com/ndvbd/Gefen, 8-bit quantized AdamW states) is shelved until we're memory-bound: at ~50M params optimizer states are ~0.4GB — nothing to save on a 24GB card — and it's early-stage with custom CUDA kernels, unvalidated on diffusion/flow models. Revisit if we adopt the HDiT-1B init (PLAN §1.2), where ~8GB of AdamW states makes its 8× reduction decisive.
 
+## Pretrained-Backbone Line (primary as of 2026-07-05, user-directed)
+
+Scratch pixel-space line closed as reference baseline (best: edge-recall 0.82 / colorfulness 0.74×GT / LPIPS 0.62 — see RUNS.md). New primary: pretrained latent backbone. **Base-model ladder (dual-designed, candidates verified on HF):**
+1. **SD1.5 + retargeted canny ControlNet** (v1): swap `controlnet_cond_embedding.conv_in` to 2ch [TIR, canny], inherit structural priors; empty prompt; 512²; existing eval gates unchanged. ~$2-5 signal runs on the 4090. Few-step via Hyper-SD/LCM-LoRA (StreamDiffusion measures 37 FPS @ 4-step on 4090 → PLAN §4's 20 FPS is safe).
+1.5. **SD3.5-Medium + from-scratch SD3ControlNetModel** (first escalation, user-suggested): far stronger prior than SD1.5, 2.5B trains on the 4090, diffusers-native ControlNet class — but no established Medium ControlNet exists to fork (official canny/depth/blur are Large-only; one 16-download community LoRA), so the conditioning branch trains from scratch. Few-step story weaker (turbo = Large-only).
+2. **Qwen-Image (base) + forked ControlNet-Union** (second escalation): Apache 2.0, only large model with an existing canny ControlNet to fork; ~20B → QLoRA/24GB plausible (unverified for Edit-2511); Lightning LoRA for few-step.
+3. **FLUX.2-klein-9B: parked** — best conceptual match (native RF, 4-step distilled) but NO ControlNet-equivalent exists for FLUX.2; conditioning would be from-scratch research on ~17B resident weights (incl. Qwen3-8B text encoder, ~29GB inference). Revisit only if 1-2 both disappoint.
+- **DINOv2/JEPA conditioning = committed v1.1** (no turnkey DINOv2 IP-Adapter in diffusers — custom image_encoder swap + projection retrain). Trigger: one-to-many color ambiguity persists in v1. Thermal-JEPA drops into the same socket later.
+- **Temporal (pretrained backbone)**: rungs — fixed per-clip noise → cross-frame attention → the attention-residual cache port via custom AttnProcessor (additive SDPA mask carries γ·Attn_{t-1} natively; cache-writing blocks use the manual-softmax branch — same two-branch pattern as the HDiT edit).
+
 ## Phase 3 — Temporal Stabilization ⬜
 
 **Goal:** flicker-free video. Gates: **FVD ≤ 350**, static-region temporal variance ≤ 1.5% over 500 frames.

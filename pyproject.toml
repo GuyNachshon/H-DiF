@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "accelerate>=1.14.0",
+    "diffusers>=0.32",
     "einops>=0.8.2",
     "huggingface-hub>=1.22.0",
     "k-diffusion",
@@ -15,6 +17,7 @@ dependencies = [
     "scikit-image>=0.26.0",
     "torch>=2.11",
     "torchvision>=0.26",
+    "transformers>=4.44",
     "wandb>=0.28.0",
 ]
 
