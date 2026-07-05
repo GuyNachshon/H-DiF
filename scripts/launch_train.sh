@@ -45,7 +45,8 @@ if pgrep -f "python src/train.py" > /dev/null; then
     exit 1
 fi
 
-export PYTHONUNBUFFERED=1  # never lose a traceback to block buffering through tee
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # fragmentation headroom  # never lose a traceback to block buffering through tee
 RUN_TAG="$(basename "$1" .yaml)-$(date +%Y%m%d-%H%M%S)"
 LOG="/workspace/logs/train-${RUN_TAG}.log"
 ln -sfn "$LOG" /workspace/logs/train.log   # stable path for tails; real file is per-run

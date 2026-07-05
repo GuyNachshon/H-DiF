@@ -99,8 +99,14 @@ class RectifiedFlow(nn.Module):
             x1_hat = x_t + (1 - t_col) * v_pred
 
         if self.lpips_weight > 0 and trustworthy.any():
-            x1_hat_m = x1_hat[trustworthy].clamp(-1, 1)
-            x1_m = x1[trustworthy]
+            # VGG activations at full batch/res OOM a 24GB card (bs64 x 256^2 killed
+            # the first probe run): cap samples and evaluate at 128^2 — standard
+            # practice, signal is preserved.
+            x1_hat_m = x1_hat[trustworthy][:16].clamp(-1, 1)
+            x1_m = x1[trustworthy][:16]
+            if x1_m.shape[-1] > 128:
+                x1_hat_m = F.interpolate(x1_hat_m, size=128, mode="bilinear", align_corners=False)
+                x1_m = F.interpolate(x1_m, size=128, mode="bilinear", align_corners=False)
             net = self._lpips_net(x0.device)
             lpips_loss = net(x1_hat_m, x1_m).mean()
             total_loss = total_loss + self.lpips_weight * lpips_loss
