@@ -37,6 +37,9 @@ explicit = true
 dev = [
     "pytest>=9.1.1",
 ]
+gpu = [
+    "bitsandbytes>=0.45; sys_platform == 'linux'",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
