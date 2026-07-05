@@ -1,0 +1,22 @@
+model:
+  base: stable-diffusion-v1-5/stable-diffusion-v1-5
+  controlnet_init: lllyasviel/sd-controlnet-canny
+data:
+  root: data/
+  size: 512
+  clip_len: 1
+train:
+  steps: 10000
+  batch_size: 4
+  grad_accum: 4
+  lr: 2.0e-05
+  weight_decay: 0.01
+  save_every: 1000
+  val_every: 1000
+  val_batches: 4
+  log_every: 25
+  wandb: true
+  hf_repo: guychuk/h-dif-controlnet
+sampling:
+  guidance_scale: 2.0
+  num_inference_steps: 20
