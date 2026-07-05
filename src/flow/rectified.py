@@ -40,13 +40,38 @@ def flow_batch(x0, x1, t):
     return x_t, v
 
 
+# Sobel mag of a unit step edge is ~4 (kernel abs-sum); this constant rescales _grad_mag's
+# raw (unnormalized) output so a strong edge lands near 1.0 for the SGA asymmetric term.
+_SGA_EDGE_SCALE = 0.25
+
+
 class RectifiedFlow(nn.Module):
-    def __init__(self, model, t_sampling="uniform", cond_dropout=0.0, edge_weight=0.0):
+    def __init__(
+        self,
+        model,
+        t_sampling="uniform",
+        cond_dropout=0.0,
+        lpips_weight=0.0,
+        edge_mode="none",
+        edge_weight=0.0,
+    ):
         super().__init__()
         self.model = model
         self.t_sampling = t_sampling
         self.cond_dropout = cond_dropout
+        self.lpips_weight = lpips_weight
+        if edge_mode not in ("none", "sga"):
+            raise ValueError(f"unknown edge_mode: {edge_mode}")
+        self.edge_mode = edge_mode
         self.edge_weight = edge_weight
+        self._lpips = None  # lazy-init on first use, see _lpips_net()
+
+    def _lpips_net(self, device):
+        if self._lpips is None:
+            import lpips
+
+            self._lpips = lpips.LPIPS(net="vgg").to(device).eval().requires_grad_(False)
+        return self._lpips
 
     def forward(self, x_t, t, cond, cache=None):
         x = torch.cat([x_t, cond], dim=1)
@@ -55,25 +80,41 @@ class RectifiedFlow(nn.Module):
         sigma = t.clamp_min(1e-4)
         return self.model(x, sigma, cache=cache)
 
-    def loss(self, x0, x1, cond):
-        if self.t_sampling == "logit_normal":
-            t = torch.sigmoid(torch.randn(x0.shape[0], device=x0.device))
-        else:
-            t = torch.rand(x0.shape[0], device=x0.device)
+    def loss(self, x0, x1, cond, t=None):
+        if t is None:
+            if self.t_sampling == "logit_normal":
+                t = torch.sigmoid(torch.randn(x0.shape[0], device=x0.device))
+            else:
+                t = torch.rand(x0.shape[0], device=x0.device)
         if self.cond_dropout > 0:
             keep = torch.rand(x0.shape[0], 1, 1, 1, device=x0.device) >= self.cond_dropout
             cond = torch.where(keep, cond, torch.zeros_like(cond))
         x_t, v = flow_batch(x0, x1, t)
         v_pred = self(x_t, t, cond)
-        flow_loss = torch.mean((v_pred - v) ** 2)
-        if self.edge_weight > 0:
-            x1_hat = x_t + (1 - t.view(-1, 1, 1, 1)) * v_pred
-            edge_pred = _grad_mag(x1_hat)
-            edge_pred = edge_pred / (edge_pred.amax(dim=(2, 3), keepdim=True) + 1e-6)
-            w_t = 1 - t.view(-1, 1, 1, 1)  # gradient is degenerate at high t; weight low t
-            edge_loss = torch.mean(w_t * (edge_pred - cond[:, 1:2]) ** 2)
-            return flow_loss + self.edge_weight * edge_loss
-        return flow_loss
+        total_loss = torch.mean((v_pred - v) ** 2)
+
+        t_col = t.view(-1, 1, 1, 1)
+        trustworthy = t_col.squeeze() > 0.5  # x1_hat only reliable near the clean (t=1) end
+        if trustworthy.any() and (self.lpips_weight > 0 or self.edge_weight > 0):
+            x1_hat = x_t + (1 - t_col) * v_pred
+
+        if self.lpips_weight > 0 and trustworthy.any():
+            x1_hat_m = x1_hat[trustworthy].clamp(-1, 1)
+            x1_m = x1[trustworthy]
+            net = self._lpips_net(x0.device)
+            lpips_loss = net(x1_hat_m, x1_m).mean()
+            total_loss = total_loss + self.lpips_weight * lpips_loss
+
+        if self.edge_mode == "sga" and self.edge_weight > 0 and trustworthy.any():
+            edge_pred_normfree = _grad_mag(x1_hat[trustworthy]) * _SGA_EDGE_SCALE
+            tir_edge = cond[trustworthy, 1:2]
+            tir_edge_mask = tir_edge > 0.5
+            if tir_edge_mask.any():
+                sga_term = F.relu(tir_edge - edge_pred_normfree).pow(2)
+                edge_loss = sga_term[tir_edge_mask].mean()
+                total_loss = total_loss + self.edge_weight * edge_loss
+
+        return total_loss
 
 
 @torch.no_grad()

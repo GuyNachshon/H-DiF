@@ -3,6 +3,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 import torch
 import yaml
 from safetensors.torch import load_file, save_file
@@ -109,15 +110,44 @@ def _edge_ssim(tir_np, pred_np):
     return structural_similarity(edges_tir, edges_pred, data_range=255)
 
 
+_DILATE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+
+
+def _edge_recall(tir_np, pred_np):
+    """Fraction of TIR Canny-edge pixels covered by a 1px-dilated pred-edge mask."""
+    tir_u8 = (tir_np * 255.0).clip(0, 255).astype("uint8")
+    pred_gray = cv2.cvtColor(((pred_np + 1.0) * 127.5).clip(0, 255).astype("uint8"), cv2.COLOR_RGB2GRAY)
+    edges_tir = cv2.Canny(tir_u8, *_CANNY_THRESH) > 0
+    edges_pred = cv2.Canny(pred_gray, *_CANNY_THRESH)
+    edges_pred_dilated = cv2.dilate(edges_pred, _DILATE_KERNEL) > 0
+    n_tir_edges = edges_tir.sum()
+    if n_tir_edges == 0:
+        return 1.0  # no edges to recall -> vacuously covered
+    return (edges_tir & edges_pred_dilated).sum() / n_tir_edges
+
+
+def _colorfulness(img_01):
+    """Hasler-Susstrunk colorfulness metric. img_01: [H,W,3] in [0,1]."""
+    r, g, b = img_01[..., 0], img_01[..., 1], img_01[..., 2]
+    rg = r - g
+    yb = 0.5 * (r + g) - b
+    return float(np.sqrt(rg.var() + yb.var()) + 0.3 * np.sqrt(rg.mean() ** 2 + yb.mean() ** 2))
+
+
 @torch.no_grad()
 def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step, flow_cfg=None):
-    """Sample RGB from val TIR, score against ground truth. Prints + logs val/ssim, val/mse, val/edge_ssim."""
+    """Sample RGB from val TIR, score against ground truth.
+
+    Prints + logs val/{ssim,mse,edge_ssim,edge_recall,colorfulness,colorfulness_gt,lpips}.
+    """
     flow_cfg = flow_cfg or {}
     x0_mode = flow_cfg.get("x0_mode", "noise")
     x0_alpha = flow_cfg.get("x0_alpha", 0.7)
     solver = _SOLVERS[sampling_cfg["solver"]]
     rf.eval()
-    ssims, mses, edge_ssims = [], [], []
+    ssims, mses, edge_ssims, edge_recalls = [], [], [], []
+    colorfulnesses, colorfulnesses_gt, lpips_scores = [], [], []
+    lpips_net = rf._lpips_net(device)
     samples = None
     for i, batch in enumerate(val_dl):
         if i >= val_batches:
@@ -127,19 +157,31 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step, flow
         x0 = make_x0(cond, mode=x0_mode, alpha=x0_alpha)
         x_pred = solver(rf, x0, cond, steps=sampling_cfg["steps"])
         mses.append(torch.mean((x_pred - x1) ** 2).item())
+        lpips_scores.append(lpips_net(x_pred.clamp(-1, 1), x1).mean().item())
         tir_np = cond[:, 0].cpu().numpy()
         pred_np = x_pred.permute(0, 2, 3, 1).cpu().numpy()
         gt_np = x1.permute(0, 2, 3, 1).cpu().numpy()
         for t, p, g in zip(tir_np, pred_np, gt_np):
             ssims.append(structural_similarity(g, p, channel_axis=2, data_range=2.0))
             edge_ssims.append(_edge_ssim(t, p))
+            edge_recalls.append(_edge_recall(t, p))
+            colorfulnesses.append(_colorfulness((p + 1) / 2))
+            colorfulnesses_gt.append(_colorfulness((g + 1) / 2))
         if i == 0 and use_wandb:
             x_pred2 = solver(rf, make_x0(cond, mode=x0_mode, alpha=x0_alpha), cond, steps=sampling_cfg["steps"])
             samples = (cond[:8, 0:1], x_pred[:8], x_pred2[:8], x1[:8])
     rf.train()
     ssim, mse = sum(ssims) / len(ssims), sum(mses) / len(mses)
     edge_ssim = sum(edge_ssims) / len(edge_ssims)
-    print(f"step {step} val/ssim {ssim:.4f} val/mse {mse:.4f} val/edge_ssim {edge_ssim:.4f}")
+    edge_recall = sum(edge_recalls) / len(edge_recalls)
+    colorfulness = sum(colorfulnesses) / len(colorfulnesses)
+    colorfulness_gt = sum(colorfulnesses_gt) / len(colorfulnesses_gt)
+    lpips_score = sum(lpips_scores) / len(lpips_scores)
+    print(
+        f"step {step} val/ssim {ssim:.4f} val/mse {mse:.4f} val/edge_ssim {edge_ssim:.4f} "
+        f"val/edge_recall {edge_recall:.4f} val/colorfulness {colorfulness:.4f} "
+        f"val/colorfulness_gt {colorfulness_gt:.4f} val/lpips {lpips_score:.4f}"
+    )
     if use_wandb:
         import wandb
         from torchvision.utils import make_grid
@@ -155,6 +197,10 @@ def run_val(rf, val_dl, sampling_cfg, val_batches, device, use_wandb, step, flow
                 "val/ssim": ssim,
                 "val/mse": mse,
                 "val/edge_ssim": edge_ssim,
+                "val/edge_recall": edge_recall,
+                "val/colorfulness": colorfulness,
+                "val/colorfulness_gt": colorfulness_gt,
+                "val/lpips": lpips_score,
                 "val/samples": wandb.Image(grid, caption="rows: TIR / pred_seed0 / pred_seed1 / gt"),
             },
             step,
@@ -187,6 +233,8 @@ def main():
         model,
         t_sampling=flow_cfg.get("t_sampling", "uniform"),
         cond_dropout=flow_cfg.get("cond_dropout", 0.0),
+        lpips_weight=flow_cfg.get("lpips_weight", 0.0),
+        edge_mode=flow_cfg.get("edge_mode", "none"),
         edge_weight=flow_cfg.get("edge_weight", 0.0),
     ).to(device)
 

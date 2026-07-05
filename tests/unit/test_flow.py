@@ -1,5 +1,6 @@
 import math
 
+import pytest
 import torch
 
 from flow.rectified import RectifiedFlow, _grad_mag, flow_batch, make_x0, trajectory_straightness
@@ -108,21 +109,58 @@ class _V0Model(torch.nn.Module):
         return torch.zeros_like(x[:, :3])
 
 
-def test_edge_loss_adds_nonnegative_mass():
+def test_sga_edge_loss_adds_nonnegative_mass():
+    # force all samples past the t>0.5 trustworthy mask so the SGA term always fires
     torch.manual_seed(0)
     x0, x1 = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8)
     cond = torch.rand(4, 2, 8, 8)
+    t = torch.full((4,), 0.9)
 
-    torch.manual_seed(1)
-    rf0 = RectifiedFlow(_V0Model(), edge_weight=0.0)
-    loss0 = rf0.loss(x0, x1, cond)
+    rf0 = RectifiedFlow(_V0Model(), edge_mode="none", edge_weight=0.0)
+    loss0 = rf0.loss(x0, x1, cond, t=t)
 
-    torch.manual_seed(1)
-    rf1 = RectifiedFlow(_V0Model(), edge_weight=0.5)
-    loss1 = rf1.loss(x0, x1, cond)
+    rf1 = RectifiedFlow(_V0Model(), edge_mode="sga", edge_weight=0.5)
+    loss1 = rf1.loss(x0, x1, cond, t=t)
 
     assert math.isfinite(loss0.item()) and math.isfinite(loss1.item())
     assert loss1.item() > loss0.item()
+
+
+def test_lpips_loss_increases_total_when_enabled():
+    try:
+        import lpips  # noqa: F401
+    except ImportError:
+        pytest.skip("lpips not installed")
+    torch.manual_seed(0)
+    # VGG's pooling stack needs >= 32x32 input or it collapses to a 0-sized feature map.
+    x0, x1 = torch.randn(4, 3, 32, 32), torch.randn(4, 3, 32, 32)
+    cond = torch.rand(4, 2, 32, 32)
+    t = torch.full((4,), 0.9)  # force samples past the t>0.5 trustworthy mask
+
+    rf0 = RectifiedFlow(_V0Model(), lpips_weight=0.0)
+    loss0 = rf0.loss(x0, x1, cond, t=t)
+    try:
+        rf1 = RectifiedFlow(_V0Model(), lpips_weight=0.1)
+        loss1 = rf1.loss(x0, x1, cond, t=t)
+    except Exception as e:
+        pytest.skip(f"lpips weights unavailable offline: {e}")
+
+    assert math.isfinite(loss0.item()) and math.isfinite(loss1.item())
+    assert loss1.item() > loss0.item()
+
+
+def test_lpips_net_constructs_and_computes_finite_loss():
+    try:
+        import lpips
+    except ImportError:
+        pytest.skip("lpips not installed")
+    try:
+        net = lpips.LPIPS(net="vgg")
+    except Exception as e:
+        pytest.skip(f"lpips weights unavailable offline: {e}")
+    a, b = torch.rand(2, 3, 32, 32) * 2 - 1, torch.rand(2, 3, 32, 32) * 2 - 1
+    out = net(a, b).mean()
+    assert math.isfinite(out.item())
 
 
 def test_x1_hat_round_trip_with_exact_v():

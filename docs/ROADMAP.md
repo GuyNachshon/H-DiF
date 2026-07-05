@@ -34,6 +34,14 @@ Repo built and tested (10/10 CPU tests). Load-bearing decisions, each independen
 
 **Pretrained-init verdict (2026-07-05, dual-verified):** PLAN §1.2's HDiT-1B/DiT-XL warm-start is not possible — the HDiT authors never released weights (GitHub/Zenodo/HF all checked; our config is byte-identical to their unweighted oxford-flowers recipe), and DiT-XL/EDM2 are incompatible architecture families (latent-space/U-Net, mismatched channels & conditioning). All runs are scratch-init. Long-term option if ever needed: self-pretrain this exact config on a generic RGB corpus first (separate budget decision).
 
+**Gate redefinition (2026-07-05, lit-validated):** Canny-SSIM is retired as the structural gate — it rewards luminance-copying (run 1 scored 0.92 by not colorizing) and punishes color-induced edges (run 4's real improvement scored 0.44). New composite gate: **edge-recall ≥ target AND Hasler-Süsstrunk colorfulness ≥ 0.6× GT mean**, with LPIPS/FID reported. NFE relaxed to 8 during quality iteration; compress back to ≤4 via reflow before deployment (PLAN's NFE≤4 is a deployment constraint, not a development one).
+
+**Quality recipe v2 (post run-4 post-mortem + lit dive):** LPIPS 0.1 on x1_hat gated to t>0.5 (PixelGen recipe, FID 23.7→10.0 in pixel-space RF); two-sided Sobel loss deleted (3 compounding bugs — per-image amax the killer); SGA-style asymmetric edge term available but off; bs 64 + lr 8e-4. Scale question (30M vs ~110M) being settled empirically by twin 40k probes. Escalations if LPIPS plateaus: P-DINO patch loss (PixelGen: →7.46), then corrected SGA. Adversarial rejected (PixelGen + Codex concur: unstable in pixel space).
+
+**Queued research (user-raised):** JEPA-family semantic conditioning — pretrain I-JEPA/V-JEPA on unlabeled KAIST thermal video, feed frozen features as conditioning alongside TIR+Canny; targets the one-to-many color ambiguity via semantics. Slots after the objective/scale probes. V-JEPA-style temporal feature prediction noted for Phase 3.
+
+**Data (deferred until probes report):** FLIR-aligned (5.1k) + M3FD (4.2k) + MFNet (1.6k) ≈ +11k aligned automotive pairs, breaks the 2-domain narrowness; RoadScene (221) as held-out generalization probe. Current failures are objective pathologies, not generalization gaps — data adds come after.
+
 ## Phase 2 — Cross-Spectral Flow Refinement ⬜
 
 **Goal:** sharp, realistic global texture in ≤ 4 NFE. Gates: **FID ≤ 18.0** (static scenes), NFE ≤ 4 with Euler/midpoint.
